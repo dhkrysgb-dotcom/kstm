@@ -1,40 +1,272 @@
-import os, random, binascii, uuid, requests, SignerPy, secrets, re, time, string, json
-from MedoSigner import Argus, Gorgon, Ladon, md5
-from typing import Any
-from flask import Flask, request, Response
+from flask import Flask, request, jsonify
+import requests, random, re, secrets, time
 
 app = Flask(__name__)
-app.config['JSON_AS_ASCII'] = False
 
-def json_response(data, status=200):
-    return Response(
-        json.dumps(data, ensure_ascii=False),
-        mimetype='application/json; charset=utf-8',
-        status=status
-    )
+class EmailChecker:
+    def __init__(self):
+        self.supported_domains = {
+            'gmail.com': self.check_gmail,
+            'googlemail.com': self.check_gmail,
+            'hotmail.com': self.check_microsoft,
+            'outlook.com': self.check_microsoft,
+            'live.com': self.check_microsoft,
+            'hi2.in': self.check_hi2,
+            'aol.com': self.check_aol
+        }
+    
+    def extract_username(self, email):
+        if '@' in email:
+            return email.split('@')[0]
+        return email
+    
+    def check_gmail(self, email):
+        try:
+            username = self.extract_username(email)
+            
+            headers = {
+                'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'google-accounts-xsrf': '1',
+            }
+            
+            __Host_GAPS = ''.join(secrets.choice("qwertyuiopasdfghjklzxcvbnm") for _ in range(20))
+            cookies = {'__Host-GAPS': __Host_GAPS}
+            
+            url = 'https://accounts.google.com/_/signup/validatepersonaldetails'
+            params = {'hl': "ar", '_reqid': "74404", 'rt': "j"}
+            payload = {
+                'f.req': '["AEThLlymT9V_0eW9Zw42mUXBqA3s9U9ljzwK7Jia8M4qy_5H3vwDL4GhSJXkUXTnPL_roS69KYSkaVJLdkmOC6bPDO0jy5qaBZR0nGnsWOb1bhxEY_YOrhedYnF3CldZzhireOeUd-vT8WbFd7SXxfhuWiGNtuPBrMKSLuMomStQkZieaIHlfdka8G45OmseoCfbsvWmoc7U","L7N","ToPython","L7N","ToPython",0,0,null,null,null,0,null,1,[],1]',
+                'deviceinfo': '[null,null,null,null,null,"IQ",null,null,null,"GlifWebSignIn",null,[],null,null,null,null,1,null,0,1,"",null,null,1,1,2]',
+            }
+            
+            response = requests.post(url, cookies=cookies, params=params, data=payload, headers=headers, timeout=15)
+            
+            if response.status_code != 200:
+                return {"available": None, "error": "initial_request_failed"}
+            
+            if '",null,"' not in response.text:
+                return {"available": None, "error": "token_not_found"}
+            
+            TL = str(response.text).split('",null,"')[1].split('"')[0]
+            __Host_GAPS = response.cookies.get_dict().get('__Host-GAPS', __Host_GAPS)
+            
+            url = 'https://accounts.google.com/_/signup/usernameavailability'
+            cookies = {'__Host-GAPS': __Host_GAPS}
+            params = {'TL': TL}
+            data = {
+                'f.req': f'["TL:{TL}","{username}",0,0,1,null,0,5167]',
+                'deviceinfo': '[null,null,null,null,null,"NL",null,null,null,"GlifWebSignIn",null,[],null,null,null,null,2,null,0,1,"",null,null,2,2]',
+            }
+            
+            response = requests.post(url, params=params, cookies=cookies, headers=headers, data=data, timeout=15)
+            
+            if response.status_code == 200:
+                if '"gf.uar",1' in response.text:
+                    return {"available": True, "username": username, "domain": "gmail.com"}
+                else:
+                    return {"available": False, "username": username, "domain": "gmail.com"}
+            else:
+                return {"available": None, "error": "availability_check_failed"}
+                
+        except Exception as e:
+            return {"available": None, "error": f"gmail_error: {str(e)}"}
+    
+    def check_microsoft(self, email):
+        try:
+            time.sleep(random.uniform(1, 2))
+            user_agents = [
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            ]
+            user_agent = random.choice(user_agents)
+            
+            response = requests.post('https://signup.live.com', 
+                                   headers={'user-agent': user_agent},
+                                   timeout=15)
+            
+            cookies = response.cookies.get_dict()
+            amsc = cookies.get('amsc')
+            if not amsc:
+                return {"available": None, "error": "cookie_not_found"}
+            
+            match = re.search(r'"apiCanary":"(.*?)"', response.text)
+            if not match:
+                return {"available": None, "error": "canary_not_found"}
+            
+            api_canary = match.group(1)
+            canary = api_canary.encode().decode('unicode_escape')
+            
+            response = requests.post(
+                'https://signup.live.com/API/CheckAvailableSigninNames',
+                cookies={'amsc': amsc},
+                headers={
+                    'authority': 'signup.live.com',
+                    'accept': 'application/json',
+                    'accept-language': 'en-US,en;q=0.9',
+                    'canary': canary,
+                    'user-agent': user_agent
+                },
+                json={'signInName': email},
+                timeout=15
+            )
+            
+            if response.status_code == 200:
+                if '"isAvailable":true' in response.text:
+                    return {"available": True, "email": email, "domain": "microsoft"}
+                else:
+                    return {"available": False, "email": email, "domain": "microsoft"}
+            else:
+                return {"available": None, "error": f"api_error_{response.status_code}"}
+                
+        except Exception as e:
+            return {"available": None, "error": f"microsoft_error: {str(e)}"}
+    
+    def check_aol(self, email):
+        try:
+            s = requests.Session()
+            r = s.get("https://login.aol.com/account/create", timeout=15, 
+                     headers={"user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
+            
+            if r.status_code != 200:
+                return {"available": None, "error": "page_load_failed"}
+            
+            specData = re.search(r'name="specData" value="([^"]+)"', r.text)
+            specId = re.search(r'name="specId" value="([^"]+)"', r.text)
+            crumb = re.search(r'name="crumb" value="([^"]+)"', r.text)
+            sessionIndex = re.search(r'name="sessionIndex" value="([^"]+)"', r.text)
+            acrumb = re.search(r'name="acrumb" value="([^"]+)"', r.text)
+            
+            if not all([specData, specId, crumb, sessionIndex, acrumb]):
+                return {"available": None, "error": "tokens_not_found"}
+            
+            specData = specData.group(1)
+            specId = specId.group(1)
+            crumb = crumb.group(1)
+            sessionIndex = sessionIndex.group(1)
+            acrumb = acrumb.group(1)
+            
+            data = f"browser-fp-data=&specId={specId}&cacheStored=&crumb={crumb}&acrumb={acrumb}&sessionIndex={sessionIndex}&done=https%3A%2F%2Fwww.aol.com&attrSetIndex=0&specData={specData}&userId={email}&signup="
+            
+            p = s.post("https://login.aol.com/account/module/create", 
+                      params={"validateField": "userId"},
+                      headers={
+                          "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+                          "x-requested-with": "XMLHttpRequest"
+                      }, 
+                      data=data,
+                      timeout=15)
+            
+            if p.status_code != 200:
+                return {"available": None, "error": "validation_failed"}
+            
+            if 'USERNAME_UNAVAILABLE' in p.text or 'taken' in p.text.lower():
+                return {"available": False, "email": email, "domain": "aol.com"}
+            else:
+                return {"available": True, "email": email, "domain": "aol.com"}
+                
+        except Exception as e:
+            return {"available": None, "error": f"aol_error: {str(e)}"}
+    
+    def check_hi2(self, email):
+        try:
+            username = self.extract_username(email)
+            
+            headers = {
+                'User-Agent': "Mozilla/5.0",
+                'Accept': "application/json, text/plain, */*",
+                'authorization': "Basic bnVsbA==",
+            }
+            
+            data = {
+                'domain': "@hi2.in",
+                'prefix': username,
+                'recaptcha': "",
+            }
+            
+            response = requests.post("https://hi2.in/api/custom", 
+                                   data=data, 
+                                   headers=headers, 
+                                   timeout=15)
+            
+            if response.status_code == 200:
+                response_data = response.json()
+                if response_data.get('success'):
+                    return {"available": True, "email": f"{username}@hi2.in", "domain": "hi2.in"}
+                else:
+                    return {"available": False, "email": f"{username}@hi2.in", "domain": "hi2.in"}
+            else:
+                return {"available": None, "error": f"api_error_{response.status_code}"}
+                
+        except Exception as e:
+            return {"available": None, "error": f"hi2_error: {str(e)}"}
+    
+    def check_email(self, email):
+        if '@' not in email:
+            return {
+                "success": False,
+                "error": "invalid_email_format",
+                "message": "البريد الإلكتروني غير صالح"
+            }
+        
+        domain = email.split('@')[-1].lower()
+        
+        if domain not in self.supported_domains:
+            return {
+                "success": False,
+                "error": "unsupported_domain",
+                "domain": domain,
+                "message": f"النطاق غير مدعوم: {domain}",
+                "supported_domains": list(self.supported_domains.keys())
+            }
+        
+        checker_function = self.supported_domains[domain]
+        result = checker_function(email)
+        
+        result["success"] = result.get("available") is not None
+        result["domain"] = domain
+        result["input_email"] = email
+        
+        return result
 
-def xor(String:str) -> Any: 
-    return "".join([hex(ord(c)^5)[2:]for c in String])
-
-def level(user_id):
-    try:
-        url = f"https://webcast16-normal-no1a.tiktokv.eu/webcast/user/?request_from=profile_card_v2&request_from_scene=1&target_uid={user_id}&iid={random.randint(1, 10**19)}&device_id={random.randint(1, 10**19)}&ac=wifi&channel=googleplay&aid=1233&app_name=musical_ly&version_code=300102&version_name=30.1.2&device_platform=android&os=android&ab_version=30.1.2&ssmix=a&device_type=RMX3511&device_brand=realme&language=ar&os_api=33&os_version=13&openudid={binascii.hexlify(os.urandom(8)).decode()}&manifest_version_code=2023001020&resolution=1080*2236&dpi=360&update_version_code=2023001020&_rticket={str(round(random.uniform(1.2, 1.6) * 100000000) * -1) + '4632'}&current_region=IQ&app_type=normal&sys_region=IQ&mcc_mnc=41805&timezone_name=Asia%2FBaghdad&carrier_region_v2=418&residence=IQ&app_language=ar&carrier_region=IQ&ac2=wifi&uoo=0&op_region=IQ&timezone_offset=10800&build_number=30.1.2&host_abi=arm64-v8a&locale=ar&region=IQ&content_language=gu%2C&ts={str(round(random.uniform(1.2, 1.6) * 100000000) * -1)}&cdid={uuid.uuid4()}&webcast_sdk_version=2920&webcast_language=ar&webcast_locale=ar_IQ"
-        headers = {'User-Agent': "com.zhiliaoapp.musically/2023001020 (Linux; U; Android 13; ar; RMX3511; Build/TP1A.220624.014; Cronet/TTNetVersion:06d6a583 2023-04-17 QuicVersion:d298137e 2023-02-13)"}
-        unix = int(time.time())
-        x_ss_stub = md5(''.encode('utf-8')).hexdigest()
-        sig = Gorgon(url.split('?')[1], unix, '', None).get_value() | {"x-ladon": Ladon.encrypt(unix, 1611921764, 1233), "x-argus": Argus.get_sign(url.split('?')[1], x_ss_stub, unix, platform=19, aid=1233, license_id=1611921764, sec_device_id="AadCFwpTyztA5j9L" + ''.join(secrets.choice(string.ascii_letters + string.digits) for _ in range(9)), sdk_version="2.3.1.i18n", sdk_version_int=2)}
-        headers.update(sig)
-        response = requests.get(url, headers=headers, timeout=10)
-        level = re.search(r'"default_pattern":"(.*?)"', response.text).group(1)
-        return level
-    except:
-        return "Not Available"
+email_checker = EmailChecker()
 
 @app.route('/api/love-Mohsen', methods=['GET'])
-def get_tiktok_info():
-    try:
-        email = request.args.get('email')
-        
+def api_check_email():
+    email = request.args.get('email')
+    
+    if not email:
+        return jsonify({
+            "success": False,
+            "error": "missing_email",
+            "message": "معامل email مطلوب"
+        }), 400
+    
+    result = email_checker.check_email(email)
+    
+    if not result.get("success", False):
+        return jsonify(result), 400
+    
+    return jsonify(result)
+
+@app.route('/health', methods=['GET'])
+def health():
+    return jsonify({
+        "status": "ok",
+        "service": "email-checker-api",
+        "timestamp": time.time()
+    })
+
+@app.route('/', methods=['GET'])
+def index():
+    return jsonify({
+        "name": "Email Checker API",
+        "version": "1.0",
+        "endpoint": "/api/love-Mohsen?email=test@example.com",
+        "supported_domains": list(email_checker.supported_domains.keys())
+    })
+
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))        
         if not email:
             return json_response({"error": "Email parameter is required"}, 400)
         
@@ -482,3 +714,4 @@ if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
 
     app.run(host='0.0.0.0', port=port, debug=False)
+
