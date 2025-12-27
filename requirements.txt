@@ -1,0 +1,5 @@
+Flask==2.3.3
+httpx==0.24.1
+asyncio==3.4.3
+MedoSigner
+SignerPy
